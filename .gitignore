@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+env/
+*.egg-info/
+
+# Model weights (large binary files - do not commit)
+models/*.pt
+!models/.gitkeep
+
+# Runtime data
+alerts/*.jpg
+alerts/*.png
+!alerts/.gitkeep
+outputs/*.csv
+outputs/*.mp4
+outputs/*.avi
+!outputs/.gitkeep
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+

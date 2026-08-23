@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Fire &amp; Smoke Detection System</title>
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- ============================ SIDEBAR ============================ -->
+  <aside class="sidebar">
+    <h2>⚙️ Controls</h2>
+
+    <div class="control-group">
+      <label class="group-label">Detection Mode</label>
+      <div class="radio-row">
+        <label><input type="radio" name="mode" value="image" checked /> Image</label>
+        <label><input type="radio" name="mode" value="video" /> Video</label>
+        <label><input type="radio" name="mode" value="webcam" /> Webcam</label>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label class="group-label">Detection Settings</label>
+
+      <label class="slider-label">
+        Confidence Threshold
+        <span id="confidenceValue">0.40</span>
+      </label>
+      <input type="range" id="confidenceSlider" min="0.05" max="1" step="0.05" value="0.40" />
+
+      <label class="slider-label">
+        IoU Threshold
+        <span id="iouValue">0.45</span>
+      </label>
+      <input type="range" id="iouSlider" min="0.05" max="1" step="0.05" value="0.45" />
+    </div>
+
+    <div class="control-group">
+      <label class="group-label">Alert Settings</label>
+
+      <label class="toggle-row">
+        <span>Alarm ON/OFF</span>
+        <input type="checkbox" id="alarmToggle" checked />
+      </label>
+
+      <label class="slider-label">
+        Alert Cooldown (seconds)
+        <span id="cooldownValue">6</span>
+      </label>
+      <input type="range" id="cooldownSlider" min="1" max="60" step="1" value="6" />
+    </div>
+
+    <div class="control-group" id="frameSkipGroup" style="display:none;">
+      <label class="slider-label">
+        Frame Skip (process every Nth frame)
+        <span id="frameSkipValue">2</span>
+      </label>
+      <input type="range" id="frameSkipSlider" min="1" max="10" step="1" value="2" />
+    </div>
+
+    <p class="privacy-note">
+      All processing happens locally on this server. No image, video, or webcam
+      data is sent anywhere else.
+    </p>
+  </aside>
+
+  <!-- ============================= MAIN ============================= -->
+  <main class="main">
+    <header class="app-header">
+      <h1>🔥 Fire &amp; Smoke Detection System</h1>
+      <p class="subtitle">
+        AI-based surveillance system for detecting fire and smoke in images,
+        videos, and live webcam streams. All processing runs locally.
+      </p>
+    </header>
+
+    <div id="modelBanner" class="banner banner-warning hidden"></div>
+
+    <!-- Dashboard cards -->
+    <section class="cards">
+      <div class="card">
+        <div class="card-label">Current Status</div>
+        <div class="card-value" id="statCurrentStatus">Idle</div>
+      </div>
+      <div class="card">
+        <div class="card-label">🔥 Fire Detections</div>
+        <div class="card-value" id="statFireCount">0</div>
+      </div>
+      <div class="card">
+        <div class="card-label">⚠️ Smoke Detections</div>
+        <div class="card-value" id="statSmokeCount">0</div>
+      </div>
+      <div class="card">
+        <div class="card-label">🚨 Total Alerts</div>
+        <div class="card-value" id="statTotalAlerts">0</div>
+      </div>
+      <div class="card">
+        <div class="card-label">📈 Max Confidence</div>
+        <div class="card-value" id="statMaxConfidence">0.0%</div>
+      </div>
+    </section>
+
+    <hr />
+
+    <!-- ------------------------- Image mode ------------------------- -->
+    <section class="mode-panel" id="panel-image">
+      <h2>🖼️ Image Detection</h2>
+      <div class="upload-box">
+        <input type="file" id="imageInput" accept=".jpg,.jpeg,.png,.bmp" />
+        <p class="hint">Upload a JPG/PNG/BMP image to run fire &amp; smoke detection.</p>
+      </div>
+      <div id="imageResultArea" class="result-area hidden">
+        <img id="imageResult" alt="Detection result" />
+        <div id="imageAlertBanners"></div>
+        <ul id="imageDetectionList" class="detection-list"></ul>
+      </div>
+    </section>
+
+    <!-- ------------------------- Video mode ------------------------- -->
+    <section class="mode-panel hidden" id="panel-video">
+      <h2>🎞️ Video Detection</h2>
+      <div class="upload-box">
+        <input type="file" id="videoInput" accept=".mp4,.avi,.mov,.mkv" />
+        <button id="startVideoBtn" class="btn btn-primary">▶️ Start Video Processing</button>
+        <p class="hint">Upload an MP4/AVI/MOV/MKV video, then click Start.</p>
+      </div>
+      <div id="videoProgress" class="hidden">
+        <div class="progress-track"><div class="progress-fill" id="videoProgressFill"></div></div>
+        <p id="videoLiveStats" class="live-stats"></p>
+      </div>
+      <div id="videoResultArea" class="result-area hidden">
+        <video id="videoResult" controls></video>
+        <p id="videoSummary" class="summary-line"></p>
+      </div>
+    </section>
+
+    <!-- ------------------------- Webcam mode ------------------------- -->
+    <section class="mode-panel hidden" id="panel-webcam">
+      <h2>📷 Live Webcam Detection</h2>
+      <p class="hint">Uses your browser's camera. Grant camera permission when prompted.</p>
+      <div class="webcam-controls">
+        <button id="startWebcamBtn" class="btn btn-primary">▶️ Start Webcam</button>
+        <button id="stopWebcamBtn" class="btn btn-secondary" disabled>⏹️ Stop Webcam</button>
+      </div>
+      <div id="webcamStatus" class="banner banner-info">Webcam is stopped. Click "Start Webcam" to begin.</div>
+      <div class="webcam-view">
+        <video id="webcamVideo" autoplay playsinline muted class="hidden"></video>
+        <canvas id="webcamCanvas" class="hidden"></canvas>
+        <img id="webcamAnnotated" alt="Live detection feed" class="hidden" />
+      </div>
+    </section>
+
+    <hr />
+
+    <!-- ------------------------- Alert status ------------------------- -->
+    <section class="alert-status">
+      <h2>Alert Status</h2>
+      <div class="alert-grid">
+        <div>
+          <div class="alert-label">Current Alert</div>
+          <div id="currentAlert" class="banner banner-success">No active alert</div>
+        </div>
+        <div>
+          <div class="alert-label">Latest Detection</div>
+          <div id="latestDetection">- (0.0%)</div>
+        </div>
+        <div>
+          <div class="alert-label">Detection Timestamp</div>
+          <div id="latestTimestamp">-</div>
+        </div>
+      </div>
+    </section>
+
+    <hr />
+
+    <!-- ------------------------- History ------------------------- -->
+    <section class="history-section">
+      <h2>📋 Detection History</h2>
+      <div id="historyEmpty" class="hint">No detections recorded yet.</div>
+      <table id="historyTable" class="hidden">
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Type</th>
+            <th>Confidence</th>
+            <th>Source</th>
+            <th>Evidence</th>
+          </tr>
+        </thead>
+        <tbody id="historyTableBody"></tbody>
+      </table>
+      <div class="history-actions">
+        <a id="downloadCsvBtn" class="btn btn-secondary" href="/api/history/csv" download>⬇️ Download History as CSV</a>
+        <button id="clearHistoryBtn" class="btn btn-danger">🗑️ Clear History</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<audio id="alarmAudio" src="/assets/alarm.wav" preload="auto"></audio>
+
+<script src="/js/app.js"></script>
+</body>
+</html>
