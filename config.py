@@ -31,7 +31,7 @@ for _dir in (MODELS_DIR, ALERTS_DIR, OUTPUTS_DIR, ASSETS_DIR, SAMPLE_DATA_DIR):
 # A standard COCO-pretrained YOLO model CANNOT detect fire/smoke because
 # "fire" and "smoke" are not COCO classes. You must place a model trained
 # on a fire/smoke dataset here. See the README "Model Setup" section.
-MODEL_PATH: Path = Path("models/firedetect-11s.pt")
+MODEL_PATH: Path = MODELS_DIR / "firedetect-11s.pt"
 
 # Expected class names for the fire/smoke model. If your custom model was
 # trained with different class names/order, update this list to match
