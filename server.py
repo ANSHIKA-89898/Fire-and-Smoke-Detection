@@ -3,25 +3,44 @@ server.py
 ---------
 Flask backend for the Fire & Smoke Detection System.
 
-Serves the static HTML/CSS/JS frontend and exposes a small JSON/multipart
-API that the frontend calls to run detection on images, video files, and
-webcam frames, plus endpoints for the detection history.
+DEPLOYMENT MODEL
+    Frontend (static HTML/CSS/JS)  ->  Netlify
+    Backend  (this file)           ->  Render / Railway / Fly.io / Hugging Face Spaces / VPS
 
-Run with:
+Netlify cannot run a long-lived Flask + OpenCV + YOLO process, so this file is
+made "cross-origin ready": it enables CORS, reads PORT / ALLOWED_ORIGINS from
+environment variables, returns absolute URLs for generated videos, and exposes
+a /api/health endpoint.
+
+Local run:
     python server.py
+
+Production run (e.g. Render / Railway start command):
+    gunicorn server:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 300
+
+Environment variables:
+    PORT             Port to listen on (set automatically by most hosts). Default 5000
+    ALLOWED_ORIGINS  Comma-separated list of allowed frontend origins,
+                     e.g. "https://my-site.netlify.app". Default "*" (allow all)
+    MAX_UPLOAD_MB    Max upload size in MB. Default 100
+    FLASK_DEBUG      "1" to enable debug mode locally. Default off
 """
 
 from __future__ import annotations
 
 import base64
 import logging
+import os
+import threading
 import time
 import uuid
 from pathlib import Path
 
 import cv2
 import numpy as np
-from flask import Flask, jsonify, request, send_from_directory, Response
+from flask import Flask, jsonify, request, send_from_directory
+from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 import config
 import utils
@@ -32,17 +51,37 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = config.BASE_DIR / "static"
+config.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="")
 
+# Trust the reverse proxy headers (Render/Railway/etc.) so request.host_url is
+# correct (https + real hostname) when building absolute URLs.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_MB", "100")) * 1024 * 1024
+
+# ---------------------------------------------------------------------------
+# CORS - lets the Netlify-hosted frontend call this backend.
+# ---------------------------------------------------------------------------
+_origins_env = os.environ.get("ALLOWED_ORIGINS", "*").strip()
+ALLOWED_ORIGINS = "*" if _origins_env == "*" else [o.strip() for o in _origins_env.split(",") if o.strip()]
+
+CORS(
+    app,
+    resources={r"/api/*": {"origins": ALLOWED_ORIGINS}, r"/outputs/*": {"origins": ALLOWED_ORIGINS}},
+    supports_credentials=False,
+    max_age=86400,
+)
+
 # ---------------------------------------------------------------------------
 # Global (single-process) detector + alert manager.
-# The detector is loaded lazily so the server can still start and serve the
-# frontend even if the model file is missing; every detection endpoint
-# checks readiness first and returns a clear JSON error instead.
+# The detector is loaded lazily so the server can still start even if the
+# model file is missing; detection endpoints return a clear JSON error.
 # ---------------------------------------------------------------------------
 _detector: FireSmokeDetector | None = None
 _detector_error: str | None = None
+_detector_lock = threading.Lock()
 _alert_manager = AlertManager()
 
 
@@ -52,15 +91,20 @@ def get_detector() -> FireSmokeDetector | None:
         return _detector
     if _detector_error is not None:
         return None
-    try:
-        _detector = FireSmokeDetector()
-        return _detector
-    except ModelNotFoundError as exc:
-        _detector_error = str(exc)
-        return None
-    except Exception as exc:  # noqa: BLE001
-        _detector_error = f"Unexpected error while loading the model: {exc}"
-        return None
+    with _detector_lock:
+        if _detector is not None:
+            return _detector
+        if _detector_error is not None:
+            return None
+        try:
+            _detector = FireSmokeDetector()
+            return _detector
+        except ModelNotFoundError as exc:
+            _detector_error = str(exc)
+            return None
+        except Exception as exc:  # noqa: BLE001
+            _detector_error = f"Unexpected error while loading the model: {exc}"
+            return None
 
 
 def _frame_to_base64_jpeg(frame: np.ndarray) -> str:
@@ -112,17 +156,32 @@ def _thresholds_from_request(source) -> tuple[float, float]:
     return conf, iou
 
 
+def _absolute_url(path: str) -> str:
+    """Build a full URL so a frontend on another domain (Netlify) can load it."""
+    return request.host_url.rstrip("/") + path
+
+
 # ---------------------------------------------------------------------------
-# Frontend
+# Frontend (still served here for local use; on Netlify the static files are
+# hosted by Netlify itself and only /api/* is used from this server).
 # ---------------------------------------------------------------------------
 @app.route("/")
 def index():
-    return send_from_directory(str(STATIC_DIR), "index.html")
+    index_file = STATIC_DIR / "index.html"
+    if index_file.exists():
+        return send_from_directory(str(STATIC_DIR), "index.html")
+    return jsonify({"service": "Fire & Smoke Detection API", "status": "running"})
 
 
 # ---------------------------------------------------------------------------
-# Status / config
+# Health / status / config
 # ---------------------------------------------------------------------------
+@app.route("/api/health")
+def health():
+    """Cheap endpoint for uptime pings and for the frontend to test reachability."""
+    return jsonify({"ok": True, "time": time.time()})
+
+
 @app.route("/api/status")
 def status():
     detector = get_detector()
@@ -177,7 +236,10 @@ def detect_image():
     if frame is None:
         return jsonify({"error": "Could not read the uploaded file as a valid image."}), 400
 
-    conf, iou = _thresholds_from_request(request.form)
+    try:
+        conf, iou = _thresholds_from_request(request.form)
+    except ValueError:
+        return jsonify({"error": "Invalid confidence/IoU value."}), 400
 
     try:
         annotated, detections = detector.predict(frame, conf, iou)
@@ -215,7 +277,10 @@ def detect_frame():
         return jsonify({"error": f"Invalid frame data: {exc}"}), 400
 
     frame = utils.resize_frame(frame)
-    conf, iou = _thresholds_from_request(payload)
+    try:
+        conf, iou = _thresholds_from_request(payload)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid confidence/IoU value."}), 400
 
     try:
         annotated, detections = detector.predict(frame, conf, iou)
@@ -249,7 +314,10 @@ def detect_video():
     if not file.filename:
         return jsonify({"error": "Uploaded video has no filename."}), 400
 
-    conf, iou = _thresholds_from_request(request.form)
+    try:
+        conf, iou = _thresholds_from_request(request.form)
+    except ValueError:
+        return jsonify({"error": "Invalid confidence/IoU value."}), 400
     try:
         frame_skip = max(1, int(request.form.get("frame_skip", config.DEFAULT_FRAME_SKIP)))
     except ValueError:
@@ -332,7 +400,8 @@ def detect_video():
                 "duration_seconds": round(duration, 2),
             },
             "new_alerts": _alerts_to_json(all_new_alerts),
-            "annotated_video_url": f"/outputs/{out_filename}",
+            # Absolute URL so it works when the frontend is on Netlify.
+            "annotated_video_url": _absolute_url(f"/outputs/{out_filename}"),
         }
     )
 
@@ -384,4 +453,6 @@ def server_error(exc):  # noqa: ANN001
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+    port = int(os.environ.get("PORT", "5000"))
+    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
+    app.run(host="0.0.0.0", port=port, debug=debug, use_reloader=False)
