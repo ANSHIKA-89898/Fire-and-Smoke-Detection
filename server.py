@@ -313,7 +313,7 @@ def detect_video():
     file = request.files["video"]
     if not file.filename:
         return jsonify({"error": "Uploaded video has no filename."}), 400
-
+    frame = utils.resize_frame(frame)
     try:
         conf, iou = _thresholds_from_request(request.form)
     except ValueError:
